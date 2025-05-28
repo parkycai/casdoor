@@ -30,11 +30,14 @@ import (
 
 type AttributeMapper func(user *object.User) message.AttributeValue
 
+type GroupAttributeMapper func(group *object.Group) message.AttributeValue
+
 type FieldRelation struct {
 	userField     string
 	notSearchable bool
 	hideOnStarOp  bool
 	fieldMapper   AttributeMapper
+	groupFieldMapper GroupAttributeMapper
 }
 
 func (rel FieldRelation) GetField() (string, error) {
@@ -48,15 +51,25 @@ func (rel FieldRelation) GetAttributeValue(user *object.User) message.AttributeV
 	return rel.fieldMapper(user)
 }
 
+func (rel FieldRelation) GetGroupAttributeValue(group *object.Group) message.AttributeValue {
+	return rel.groupFieldMapper(group)
+}
+
 var ldapAttributesMapping = map[string]FieldRelation{
 	"cn": {userField: "name", hideOnStarOp: true, fieldMapper: func(user *object.User) message.AttributeValue {
 		return message.AttributeValue(user.Name)
+	}, groupFieldMapper: func(group *object.Group) message.AttributeValue {
+		return message.AttributeValue(group.Name)
 	}},
-	"uid": {userField: "name", hideOnStarOp: true, fieldMapper: func(user *object.User) message.AttributeValue {
-		return message.AttributeValue(user.Name)
+	"uid": {userField: "id", hideOnStarOp: true, fieldMapper: func(user *object.User) message.AttributeValue {
+		return message.AttributeValue(user.Id)
+	}, groupFieldMapper: func(group *object.Group) message.AttributeValue {
+		return message.AttributeValue(group.GetId())
 	}},
 	"displayname": {userField: "displayName", fieldMapper: func(user *object.User) message.AttributeValue {
 		return message.AttributeValue(user.DisplayName)
+	}, groupFieldMapper: func(group *object.Group) message.AttributeValue {
+		return message.AttributeValue(group.DisplayName)
 	}},
 	"email": {userField: "email", fieldMapper: func(user *object.User) message.AttributeValue {
 		return message.AttributeValue(user.Email)
@@ -70,6 +83,24 @@ var ldapAttributesMapping = map[string]FieldRelation{
 	"title": {userField: "tag", fieldMapper: func(user *object.User) message.AttributeValue {
 		return message.AttributeValue(user.Tag)
 	}},
+	"objectclass": {userField: "tag", fieldMapper: func(user *object.User) message.AttributeValue {
+		return message.AttributeValue("posixAccount")
+	}, groupFieldMapper: func(group *object.Group) message.AttributeValue {
+		return message.AttributeValue("posixGroup")
+	}},
+	"gidnumber": {userField: "tag", fieldMapper: func(user *object.User) message.AttributeValue {
+		return message.AttributeValue(fmt.Sprintf("%v", hash(user.Groups[0])))
+	}, groupFieldMapper: func(group *object.Group) message.AttributeValue {
+		return message.AttributeValue(fmt.Sprintf("%v", hash(group.GetId())))
+	}},
+	// "memberuid": {userField: "memberUid", groupFieldMapper: func(group *object.Group) message.AttributeValue {
+	// 	users := object.GetGroupUsersWithoutError(group.GetId())
+	// 	var memberUids []string
+	// 	for _, user := range users {
+	// 		memberUids = append(memberUids, user.Name)
+	// 	}
+	// 	return message.AttributeValue(strings.Join(memberUids, ","))
+	// }},
 	"userPassword": {
 		userField:     "userPassword",
 		notSearchable: true,
@@ -80,6 +111,7 @@ var ldapAttributesMapping = map[string]FieldRelation{
 }
 
 const ldapMemberOfAttr = "memberOf"
+
 
 var AdditionalLdapAttributes []message.LDAPString
 
@@ -124,6 +156,33 @@ func getNameAndOrgFromFilter(baseDN, filter string) (string, string, int) {
 	return name, org, ldap.LDAPResultSuccess
 }
 
+func getGroupSearchParamsFromFilter(baseDN, filter string) (string, string,string,string, int) {
+	if!strings.Contains(baseDN, "ou=") {
+		return "", "", "", "", ldap.LDAPResultInvalidDNSyntax
+	}
+	name, org, err := getNameAndOrgFromDN(fmt.Sprintf("cn=%s,", getUsername(filter)) + baseDN)
+	if err!= nil {
+		panic(err)
+	}
+	// Parse filter for memberUid and gidNumber
+	memberUid := ""
+	gidNumber := ""
+	filter = strings.ToLower(filter)
+	if strings.Contains(filter, "memberuid=") {
+		start := strings.Index(filter, "memberuid=") + len("memberuid=")
+		end := strings.Index(filter[start:], ")") + start
+		memberUid = filter[start:end]
+	}
+
+	if strings.Contains(filter, "gidnumber=") {
+		start := strings.Index(filter, "gidnumber=") + len("gidNumber=")
+		end := strings.Index(filter[start:], ")") + start
+		gidNumber = filter[start:end]
+	}
+
+	return name, org, memberUid, gidNumber, ldap.LDAPResultSuccess
+}
+
 func getUsername(filter string) string {
 	nameIndex := strings.Index(filter, "cn=")
 	if nameIndex == -1 {
@@ -140,6 +199,9 @@ func getUsername(filter string) string {
 	var name string
 	for i := nameIndex; filter[i] != ')'; i++ {
 		name = name + string(filter[i])
+	}
+	if name == "" {
+		return "*"
 	}
 	return name
 }
@@ -192,6 +254,10 @@ func buildUserFilterCondition(filter interface{}) (builder.Cond, error) {
 				names = append(names, user.Name)
 			}
 			return builder.In("name", names), nil
+		}
+
+		if attr == "objectclass" {
+			return builder.And(builder.Expr("1 = 1")), nil
 		}
 
 		field, err := getUserFieldFromAttribute(attr)
@@ -251,6 +317,25 @@ func buildSafeCondition(filter interface{}) builder.Cond {
 	return condition
 }
 
+func getSearchParamFromFilterString(filterString string, paramName string, defaultValue string) (value string) {
+	filterString = strings.ToLower(filterString)
+    paramName = strings.ToLower(paramName)
+    
+    start := strings.Index(filterString, paramName + "=")
+    if start == -1 {
+        return defaultValue
+    }
+    
+    start += len(paramName) + 1 // 跳过参数名和等号
+    end := strings.Index(filterString[start:], ")")
+    if end == -1 || end == start{
+        return defaultValue
+    }
+    
+    value = filterString[start : start+end]
+    return value
+}
+
 func GetFilteredUsers(m *ldap.Message) (filteredUsers []*object.User, code int) {
 	var err error
 	r := m.GetSearchRequest()
@@ -260,7 +345,24 @@ func GetFilteredUsers(m *ldap.Message) (filteredUsers []*object.User, code int) 
 		return nil, code
 	}
 
-	if name == "*" { // get all users from organization 'org'
+	if name == "*" { // get all users from organization 'org', or by gidNumber
+		gidNumber := getSearchParamFromFilterString(r.FilterString(), "gidnumber", "")
+		if gidNumber!= "" {
+			allGroups, err := object.GetGroups(org)
+			if err!= nil {
+				panic(err)
+			}
+			for _, group := range allGroups {
+				if fmt.Sprintf("%v", hash(group.GetId())) == gidNumber {
+					groupUsers := object.GetGroupUsersWithoutError(group.GetId())					
+					filteredUsers = append(filteredUsers, groupUsers...)
+					break
+				}
+			}
+
+			return filteredUsers, ldap.LDAPResultSuccess
+		}
+		
 		if m.Client.IsGlobalAdmin && org == "*" {
 			filteredUsers, err = object.GetGlobalUsersWithFilter(buildSafeCondition(r.Filter()))
 			if err != nil {
@@ -321,6 +423,72 @@ func GetFilteredUsers(m *ldap.Message) (filteredUsers []*object.User, code int) 
 	}
 }
 
+func GetFilteredGroups(m *ldap.Message) (filteredGroups []*object.Group, code int) {
+	var err error
+	r := m.GetSearchRequest()
+	groupName, org, memberUid, gidNumber, code := getGroupSearchParamsFromFilter(string(r.BaseObject()), r.FilterString())
+	if code!= ldap.LDAPResultSuccess {
+		return nil, code
+	}
+	if groupName != "*" { //exactly match
+		groupId := util.GetId(org, groupName)
+		group, err := object.GetGroup(groupId)
+		if err!= nil {
+			panic(err)
+		}
+		if group!= nil {
+			filteredGroups = append(filteredGroups, group)
+		}
+
+		return filteredGroups, ldap.LDAPResultSuccess
+	}
+
+	allGroups,err:= object.GetGroups(org);
+	if err!= nil {
+		panic(err)
+	}
+
+	if(gidNumber != ""){
+		for i, group := range allGroups {
+			if fmt.Sprintf("%v", hash(group.GetId())) == gidNumber {
+				filteredGroups = append(filteredGroups, group)
+				allGroups = append(allGroups[:i], allGroups[i+1:]...)
+				break;
+			}
+		}
+	}
+
+	if(memberUid!= ""){ //now only support OR serach
+		for _, group := range allGroups {
+			users := object.GetGroupUsersWithoutError(group.GetId())
+			for _, user := range users {
+				if user.Name == memberUid {
+					filteredGroups = append(filteredGroups, group)
+				}
+			}
+		}
+	}
+
+
+	if groupName == "*" && memberUid == "" && gidNumber == "" { // get all groups from organization 'org'
+		if m.Client.IsGlobalAdmin && org == "*" {
+			filteredGroups, err := object.GetGroups("*")
+			if err!= nil {
+				panic(err)
+			}
+			
+			return filteredGroups, ldap.LDAPResultSuccess
+		}
+		if m.Client.IsGlobalAdmin || org == m.Client.OrgName {
+			filteredGroups, err = object.GetGroups(org)
+		}
+		if err!= nil {
+			panic(err)
+		}
+	}
+	return filteredGroups, ldap.LDAPResultSuccess
+}
+
 // get user password with hash type prefix
 // TODO not handle salt yet
 // @return {md5}5f4dcc3b5aa765d61d8327deb882cf99
@@ -345,15 +513,23 @@ func getUserPasswordWithType(user *object.User) string {
 }
 
 func getAttribute(attributeName string, user *object.User) message.AttributeValue {
-	v, ok := ldapAttributesMapping[attributeName]
+	v, ok := ldapAttributesMapping[strings.ToLower(attributeName)]
 	if !ok {
 		return ""
 	}
 	return v.GetAttributeValue(user)
 }
 
+func getGroupAttribute(attributeName string, group *object.Group) message.AttributeValue {
+	v, ok := ldapAttributesMapping[strings.ToLower(attributeName)]
+	if!ok {
+		return ""
+	}
+	return v.GetGroupAttributeValue(group)
+}
+
 func getUserFieldFromAttribute(attributeName string) (string, error) {
-	v, ok := ldapAttributesMapping[attributeName]
+	v, ok := ldapAttributesMapping[strings.ToLower(attributeName)]
 	if !ok {
 		return "", fmt.Errorf("attribute %s not supported", attributeName)
 	}

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"strings"
 
 	"github.com/casdoor/casdoor/conf"
 	"github.com/casdoor/casdoor/object"
@@ -149,7 +150,8 @@ func handleSearch(w ldap.ResponseWriter, m *ldap.Message) {
 	}
 
 	r := m.GetSearchRequest()
-	if r.FilterString() == "(objectClass=*)" {
+	fString := r.FilterString()
+	if fString == "(objectClass=*)" {
 		w.Write(res)
 		return
 	}
@@ -162,6 +164,49 @@ func handleSearch(w ldap.ResponseWriter, m *ldap.Message) {
 	default:
 	}
 
+	log.Print("Searching..."+fString)
+	if strings.Contains(strings.ToLower(fString), "objectclass=posixgroup"){
+		searchGroups(m, res, w, r)
+	}else{
+		searchUsers(m, res, w, r)
+	}
+	
+}
+const ldapMemberUidAttr = "memberUid"
+func searchGroups(m *ldap.Message, res message.SearchResultDone, w ldap.ResponseWriter, r message.SearchRequest) {
+	groups, code := GetFilteredGroups(m)
+	if code!= ldap.LDAPResultSuccess {
+		res.SetResultCode(code)
+		w.Write(res)
+		return
+	}
+	for _, group := range groups {
+		dn := fmt.Sprintf("cn=%s,objectclass=posixGroup,%s", group.Name, string(r.BaseObject()))
+		e := ldap.NewSearchResultEntry(dn)
+		groupUsers := object.GetGroupUsersWithoutError(group.GetId())
+		for _, member := range groupUsers {
+			e.AddAttribute(ldapMemberUidAttr, message.AttributeValue(member.Name))
+		}
+		attrs := r.Attributes()	
+		for _, attr := range attrs {
+			if string(attr) == "*" {
+				attrs = AdditionalLdapAttributes
+				break
+			}
+		}
+		for _, attr := range attrs {
+			if strings.ToLower(string(attr)) == "memberuid" {
+				continue
+			}
+			e.AddAttribute(message.AttributeDescription(attr), getGroupAttribute(string(attr), group))
+		}
+		w.Write(e)
+		log.Print(fmt.Printf("Found group: %s",e))
+	}
+	w.Write(res)
+}
+
+func searchUsers(m *ldap.Message, res message.SearchResultDone, w ldap.ResponseWriter, r message.SearchRequest) {
 	users, code := GetFilteredUsers(m)
 	if code != ldap.LDAPResultSuccess {
 		res.SetResultCode(code)
@@ -172,14 +217,15 @@ func handleSearch(w ldap.ResponseWriter, m *ldap.Message) {
 	for _, user := range users {
 		dn := fmt.Sprintf("uid=%s,cn=%s,%s", user.Id, user.Name, string(r.BaseObject()))
 		e := ldap.NewSearchResultEntry(dn)
-		uidNumberStr := fmt.Sprintf("%v", hash(user.Name))
-		e.AddAttribute("uidNumber", message.AttributeValue(uidNumberStr))
-		e.AddAttribute("gidNumber", message.AttributeValue(uidNumberStr))
-		e.AddAttribute("homeDirectory", message.AttributeValue("/home/"+user.Name))
-		e.AddAttribute("cn", message.AttributeValue(user.Name))
-		e.AddAttribute("uid", message.AttributeValue(user.Id))
+		// uidNumberStr := fmt.Sprintf("%v", hash(user.Id))
+		// gidNumberStr := fmt.Sprintf("%v", hash(user.Groups[0]))
+		// e.AddAttribute("uidNumber", message.AttributeValue(uidNumberStr))		
+		// e.AddAttribute("gidNumber", message.AttributeValue(gidNumberStr))
+		// e.AddAttribute("homeDirectory", message.AttributeValue("/home/"+user.Name))
+		// e.AddAttribute("cn", message.AttributeValue(user.Name))
+		// e.AddAttribute("uid", message.AttributeValue(user.Id))
 		for _, group := range user.Groups {
-			e.AddAttribute(ldapMemberOfAttr, message.AttributeValue(group))
+			e.AddAttribute(ldapMemberOfAttr, message.AttributeValue(getGroupDNFromIdString(group)))
 		}
 		attrs := r.Attributes()
 		for _, attr := range attrs {
@@ -196,8 +242,19 @@ func handleSearch(w ldap.ResponseWriter, m *ldap.Message) {
 		}
 
 		w.Write(e)
+		log.Print(fmt.Printf("Found user: %s",e))
 	}
 	w.Write(res)
+}
+
+func getGroupDNFromIdString(id string) string {
+	parts := strings.Split(id, "/")
+	if len(parts) != 2 {
+		return ""
+	}
+	owner := parts[0]
+	name := parts[1]
+	return fmt.Sprintf("cn=%s,ou=%s,dc=example,dc=com", name, owner)
 }
 
 func hash(s string) uint32 {
