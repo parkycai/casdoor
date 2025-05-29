@@ -151,10 +151,10 @@ func handleSearch(w ldap.ResponseWriter, m *ldap.Message) {
 
 	r := m.GetSearchRequest()
 	fString := r.FilterString()
-	if fString == "(objectClass=*)" {
-		w.Write(res)
-		return
-	}
+	// if fString == "(objectClass=*)" {
+	// 	w.Write(res)
+	// 	return
+	// }
 
 	// Handle Stop Signal (server stop / client disconnected / Abandoned request....)
 	select {
@@ -165,12 +165,16 @@ func handleSearch(w ldap.ResponseWriter, m *ldap.Message) {
 	}
 
 	log.Print("Searching..."+fString)
-	if strings.Contains(strings.ToLower(fString), "objectclass=posixgroup"){
+	if fString == "(objectClass=*)" {
+		searchGroups(m, res, w, r)
+		searchUsers(m, res, w, r)
+	}else if strings.Contains(strings.ToLower(fString), "objectclass=posixgroup"){
 		searchGroups(m, res, w, r)
 	}else{
 		searchUsers(m, res, w, r)
 	}
 	
+	w.Write(res)
 }
 const ldapMemberUidAttr = "memberUid"
 func searchGroups(m *ldap.Message, res message.SearchResultDone, w ldap.ResponseWriter, r message.SearchRequest) {
@@ -203,7 +207,6 @@ func searchGroups(m *ldap.Message, res message.SearchResultDone, w ldap.Response
 		w.Write(e)
 		log.Print(fmt.Printf("Found group: %s",e))
 	}
-	w.Write(res)
 }
 
 func searchUsers(m *ldap.Message, res message.SearchResultDone, w ldap.ResponseWriter, r message.SearchRequest) {
@@ -247,7 +250,6 @@ func searchUsers(m *ldap.Message, res message.SearchResultDone, w ldap.ResponseW
 		w.Write(e)
 		log.Print(fmt.Printf("Found user: %s",e))
 	}
-	w.Write(res)
 }
 
 func getGroupDNFromIdString(id string) string {

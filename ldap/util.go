@@ -198,14 +198,18 @@ func getUsername(filter string) string {
 		nameIndex += 3
 	}
 
-	var name string
-	for i := nameIndex; filter[i] != ')'; i++ {
-		name = name + string(filter[i])
-	}
-	if name == "" {
-		return "*"
-	}
-	return name
+    // 使用rune来处理中文字符
+    runes := []rune(filter)
+    var nameRunes []rune
+    for i := nameIndex; i < len(runes) && runes[i] != ')'; i++ {
+        nameRunes = append(nameRunes, runes[i])
+    }
+    
+    name := string(nameRunes)
+    if name == "" {
+        return "*"
+    }
+    return name
 }
 
 func stringInSlice(value string, list []string) bool {
@@ -344,7 +348,8 @@ func GetFilteredUsers(m *ldap.Message) (filteredUsers []*object.User, code int) 
 
 	name, org, code := getNameAndOrgFromFilter(string(r.BaseObject()), r.FilterString())
 	if code != ldap.LDAPResultSuccess {
-		return nil, code
+		name=getUsername(r.FilterString())
+		org=m.Client.OrgName
 	}
 
 	if name == "*" { // get all users from organization 'org', or by gidNumber
@@ -430,7 +435,8 @@ func GetFilteredGroups(m *ldap.Message) (filteredGroups []*object.Group, code in
 	r := m.GetSearchRequest()
 	groupName, org, memberUid, gidNumber, code := getGroupSearchParamsFromFilter(string(r.BaseObject()), r.FilterString())
 	if code!= ldap.LDAPResultSuccess {
-		return nil, code
+		groupName = getUsername(r.FilterString())
+		org = m.Client.OrgName
 	}
 	if groupName != "*" { //exactly match
 		groupId := util.GetId(org, groupName)
