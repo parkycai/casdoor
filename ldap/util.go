@@ -56,12 +56,12 @@ func (rel FieldRelation) GetGroupAttributeValue(group *object.Group) message.Att
 }
 
 var ldapAttributesMapping = map[string]FieldRelation{
-	"cn": {userField: "name", hideOnStarOp: true, fieldMapper: func(user *object.User) message.AttributeValue {
+	"cn": {userField: "name", hideOnStarOp: false, fieldMapper: func(user *object.User) message.AttributeValue {
 		return message.AttributeValue(user.Name)
 	}, groupFieldMapper: func(group *object.Group) message.AttributeValue {
 		return message.AttributeValue(group.Name)
 	}},
-	"uid": {userField: "id", hideOnStarOp: true, fieldMapper: func(user *object.User) message.AttributeValue {
+	"uid": {userField: "id", hideOnStarOp: false, fieldMapper: func(user *object.User) message.AttributeValue {
 		return message.AttributeValue(user.Id)
 	}, groupFieldMapper: func(group *object.Group) message.AttributeValue {
 		return message.AttributeValue(group.GetId())
@@ -83,7 +83,7 @@ var ldapAttributesMapping = map[string]FieldRelation{
 	"title": {userField: "tag", fieldMapper: func(user *object.User) message.AttributeValue {
 		return message.AttributeValue(user.Tag)
 	}},
-	"objectclass": {userField: "tag", fieldMapper: func(user *object.User) message.AttributeValue {
+	"objectclass": {userField: "tag", hideOnStarOp: true, fieldMapper: func(user *object.User) message.AttributeValue {
 		return message.AttributeValue("posixAccount")
 	}, groupFieldMapper: func(group *object.Group) message.AttributeValue {
 		return message.AttributeValue("posixGroup")
@@ -103,6 +103,7 @@ var ldapAttributesMapping = map[string]FieldRelation{
 	// }},
 	"userPassword": {
 		userField:     "userPassword",
+		hideOnStarOp: true,
 		notSearchable: true,
 		fieldMapper: func(user *object.User) message.AttributeValue {
 			return message.AttributeValue(getUserPasswordWithType(user))
@@ -135,7 +136,8 @@ func getNameAndOrgFromDN(DN string) (string, string, error) {
 	}
 
 	if params["cn"] == "" {
-		return "", "", fmt.Errorf("please use Admin Name format like cn=xxx,ou=xxx,dc=example,dc=com")
+		params["cn"] = "*"
+		//return "", "", fmt.Errorf("please use Admin Name format like cn=xxx,ou=xxx,dc=example,dc=com")
 	}
 	if params["ou"] == "" {
 		return params["cn"], object.CasdoorOrganization, nil

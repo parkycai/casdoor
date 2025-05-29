@@ -234,6 +234,9 @@ func searchUsers(m *ldap.Message, res message.SearchResultDone, w ldap.ResponseW
 				break
 			}
 		}
+		if(len(attrs)==0){
+			attrs = AdditionalLdapAttributes
+		}
 		for _, attr := range attrs {
 			e.AddAttribute(message.AttributeDescription(attr), getAttribute(string(attr), user))
 			if string(attr) == "title" {
